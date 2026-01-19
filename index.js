@@ -1,28 +1,34 @@
+require("dotenv").config(); // <--- Loads your secrets
 const express = require("express");
 const axios = require("axios");
 const cheerio = require("cheerio");
 const cors = require("cors");
-const fs = require("fs");
-const path = require("path");
-const cron = require("node-cron"); // <--- The Robot
+const mongoose = require("mongoose");
+const cron = require("node-cron");
 
 const app = express();
 app.use(cors());
 
-const DB_FILE = path.join(__dirname, "db.json");
-
-// --- DATABASE HELPERS ---
-const readDB = () => {
-  if (!fs.existsSync(DB_FILE)) return [];
-  return JSON.parse(fs.readFileSync(DB_FILE));
+// --- DATABASE CONNECTION ---
+const connectDB = async () => {
+  try {
+    const conn = await mongoose.connect(process.env.MONGO_URI);
+    console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
+  } catch (error) {
+    console.error(`❌ Error: ${error.message}`);
+    process.exit(1);
+  }
 };
+connectDB();
 
-const writeDB = (data) => {
-  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
-};
+// --- SCHEMA ---
+const stockSchema = new mongoose.Schema({
+  date: String, // Format: "2026-01-19"
+  stocks: Array, // Stores the entire list of stocks for that day
+});
+const DailyMarket = mongoose.model("DailyMarket", stockSchema);
 
-// --- THE CORE LOGIC (Reusable) ---
-// This function does the heavy lifting. Both the Robot AND the API use this.
+// --- THE LOGIC ---
 const fetchAndSaveMarketData = async () => {
   try {
     console.log("🔄 Starting Market Scrape...");
@@ -39,26 +45,24 @@ const fetchAndSaveMarketData = async () => {
       const price = parseFloat($(tds[6]).text().replace(/,/g, "").trim());
       const change = parseFloat($(tds[7]).text().trim());
 
-      if (symbol && !isNaN(price)) {
-        stocks.push({ symbol, name, price, change });
-      }
+      if (symbol && !isNaN(price)) stocks.push({ symbol, name, price, change });
     });
 
     if (stocks.length > 0) {
-      const history = readDB();
       const todayStr = new Date().toISOString().split("T")[0];
 
-      // Check for duplicate day
-      const alreadySaved = history.some((entry) => entry.date === todayStr);
+      // Check if today exists in MongoDB
+      const exists = await DailyMarket.findOne({ date: todayStr });
 
-      if (!alreadySaved) {
-        history.push({ date: todayStr, stocks });
-        writeDB(history);
-        console.log(`✅ SAVED: ${stocks.length} records for ${todayStr}`);
+      if (!exists) {
+        await DailyMarket.create({ date: todayStr, stocks });
+        console.log(
+          `✅ SAVED to MongoDB: ${stocks.length} records for ${todayStr}`
+        );
       } else {
-        console.log(`⚠️ SKIP: Data for ${todayStr} already exists.`);
+        console.log(`⚠️ SKIP: MongoDB already has data for ${todayStr}.`);
       }
-      return stocks; // Return data for the API user
+      return stocks;
     }
   } catch (error) {
     console.error("❌ Scrape Failed:", error.message);
@@ -66,33 +70,20 @@ const fetchAndSaveMarketData = async () => {
   }
 };
 
-// --- THE ROBOT (CRON JOB) ---
-
-// Schedule: Run every day at 15:00 (3:00 PM)
-// Format: 'Minute Hour * * *'
-cron.schedule("0 15 * * *", () => {
-  console.log("⏰ 3:00 PM Market Close - Auto-Pilot Engaged!");
-  fetchAndSaveMarketData();
-});
-
-// TEST ROBOT: Runs every minute (Just to prove it works to you right now)
-// You can delete this block later.
-// cron.schedule("* * * * *", () => {
-//   console.log("🤖 Test Robot: Checking for new data...");
-//   fetchAndSaveMarketData();
-// });
-
-// --- API ROUTES ---
+// --- ROUTES ---
+app.get("/", (req, res) => res.send("API is Running...")); // Health Check
 
 app.get("/api/live", async (req, res) => {
-  // When a user asks for live data, we just run the scraper function manually
+  // Return live data (and try to save it)
   const data = await fetchAndSaveMarketData();
   res.json(data);
 });
 
-app.get("/api/history/:symbol", (req, res) => {
+app.get("/api/history/:symbol", async (req, res) => {
   const { symbol } = req.params;
-  const allHistory = readDB();
+  // Fetch all history from MongoDB
+  const allHistory = await DailyMarket.find({}).sort({ date: 1 });
+
   const stockHistory = allHistory
     .map((day) => {
       const stockData = day.stocks.find(
@@ -104,11 +95,15 @@ app.get("/api/history/:symbol", (req, res) => {
       };
     })
     .filter((item) => item.price !== null);
+
   res.json(stockHistory);
 });
 
-const PORT = 3000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running on http://0.0.0.0:${PORT}`);
-  console.log("⏰ Cron Job scheduled for 3:00 PM Daily.");
+// --- CRON JOB (3:00 PM) ---
+cron.schedule("0 15 * * *", () => {
+  console.log("⏰ Auto-Pilot: Saving to MongoDB...");
+  fetchAndSaveMarketData();
 });
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
