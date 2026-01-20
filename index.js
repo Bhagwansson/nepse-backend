@@ -30,50 +30,58 @@ const DailyMarket = mongoose.model("DailyMarket", stockSchema);
 
 // --- THE LOGIC ---
 const fetchAndSaveMarketData = async () => {
-  try {
-    console.log("🔄 Starting Market Scrape...");
-    // Added a random number to URL to prevent caching by the website
-    const { data } = await axios.get(
-      `https://www.sharesansar.com/today-share-price?t=${Date.now()}`
-    );
-    const $ = cheerio.load(data);
-    const stocks = [];
+    try {
+        console.log("🔄 Fetching LIVE Market Data...");
+        
+        // 1. USE THE LIVE URL
+        // We add a random timer (?t=...) to force a fresh version every time
+        const { data } = await axios.get(`https://www.sharesansar.com/live-trading?t=${Date.now()}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0' } // Pretend to be a real browser
+        });
+        
+        const $ = cheerio.load(data);
+        const stocks = [];
 
-    $("#headFixed tbody tr").each((index, element) => {
-      const tds = $(element).find("td");
-      const symbol = $(tds[1]).text().trim();
-      const name = $(tds[2]).text().trim();
-      const price = parseFloat($(tds[6]).text().replace(/,/g, "").trim());
-      const change = parseFloat($(tds[7]).text().trim());
+        // 2. SCRAPE THE LIVE TABLE
+        $('table tbody tr').each((index, element) => {
+            const tds = $(element).find('td');
+            
+            // Safety check: Ensure row has enough data
+            if (tds.length > 5) {
+                const symbol = $(tds[1]).text().trim();
+                // In Live Table: Price is usually 3rd column (index 2), Change % is 5th (index 4)
+                const price = parseFloat($(tds[2]).text().replace(/,/g, '').trim());
+                const change = parseFloat($(tds[4]).text().trim());
+                const name = symbol; // Live table often lacks full name, so we use Symbol as Name temporarily
 
-      if (symbol && !isNaN(price)) stocks.push({ symbol, name, price, change });
-    });
+                if (symbol && !isNaN(price)) {
+                    stocks.push({ symbol, name, price, change });
+                }
+            }
+        });
 
-    if (stocks.length > 0) {
-      // FIX: Ensure we use the correct Nepal Date
-      // We shift the time by 5 hours 45 mins to match Nepal Time
-      const nepalTime = new Date(new Date().getTime() + 20700000);
-      const todayStr = nepalTime.toISOString().split("T")[0];
-
-      // FIX: Use 'findOneAndUpdate' instead of 'create'
-      // This Updates the existing entry OR Creates a new one (upsert: true)
-      await DailyMarket.findOneAndUpdate(
-        { date: todayStr },
-        { stocks: stocks },
-        { upsert: true, new: true }
-      );
-
-      console.log(
-        `✅ LIVE UPDATE: Saved ${stocks.length} stocks for ${todayStr}`
-      );
-      return stocks;
+        if (stocks.length > 0) {
+            // 3. UPSERT LOGIC (Overwrite today's entry if it exists)
+            const nepalTime = new Date(new Date().getTime() + 20700000); // UTC + 5:45
+            const todayStr = nepalTime.toISOString().split('T')[0];
+            
+            await DailyMarket.findOneAndUpdate(
+                { date: todayStr }, 
+                { stocks: stocks },
+                { upsert: true, new: true }
+            );
+            
+            console.log(`✅ LIVE DATA: ${stocks.length} stocks updated for ${todayStr}`);
+            return stocks;
+        } else {
+            console.log("⚠️ No data found in Live Table. Market might be closed or layout changed.");
+            return [];
+        }
+    } catch (error) {
+        console.error("❌ Scrape Failed:", error.message);
+        return [];
     }
-  } catch (error) {
-    console.error("❌ Scrape Failed:", error.message);
-    return [];
-  }
 };
-
 // --- ROUTES ---
 app.get("/", (req, res) => res.send("API is Running...")); // Health Check
 
