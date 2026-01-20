@@ -32,8 +32,9 @@ const DailyMarket = mongoose.model("DailyMarket", stockSchema);
 const fetchAndSaveMarketData = async () => {
   try {
     console.log("🔄 Starting Market Scrape...");
+    // Added a random number to URL to prevent caching by the website
     const { data } = await axios.get(
-      "https://www.sharesansar.com/today-share-price"
+      `https://www.sharesansar.com/today-share-price?t=${Date.now()}`
     );
     const $ = cheerio.load(data);
     const stocks = [];
@@ -49,19 +50,22 @@ const fetchAndSaveMarketData = async () => {
     });
 
     if (stocks.length > 0) {
-      const todayStr = new Date().toISOString().split("T")[0];
+      // FIX: Ensure we use the correct Nepal Date
+      // We shift the time by 5 hours 45 mins to match Nepal Time
+      const nepalTime = new Date(new Date().getTime() + 20700000);
+      const todayStr = nepalTime.toISOString().split("T")[0];
 
-      // Check if today exists in MongoDB
-      const exists = await DailyMarket.findOne({ date: todayStr });
+      // FIX: Use 'findOneAndUpdate' instead of 'create'
+      // This Updates the existing entry OR Creates a new one (upsert: true)
+      await DailyMarket.findOneAndUpdate(
+        { date: todayStr },
+        { stocks: stocks },
+        { upsert: true, new: true }
+      );
 
-      if (!exists) {
-        await DailyMarket.create({ date: todayStr, stocks });
-        console.log(
-          `✅ SAVED to MongoDB: ${stocks.length} records for ${todayStr}`
-        );
-      } else {
-        console.log(`⚠️ SKIP: MongoDB already has data for ${todayStr}.`);
-      }
+      console.log(
+        `✅ LIVE UPDATE: Saved ${stocks.length} stocks for ${todayStr}`
+      );
       return stocks;
     }
   } catch (error) {
