@@ -11,13 +11,13 @@ const optionalAuth = async (req, res, next) => {
     try {
       token = req.headers.authorization.split(" ")[1];
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      req.user = await User.findById(decoded.id); // User is Logged In
+      req.user = await User.findById(decoded.id);
     } catch (error) {
-      console.log("Token invalid, treating as Guest");
-      req.user = null; // Token failed, treat as Guest
+      console.log("Token invalid or expired, treating as Guest");
+      req.user = null;
     }
   } else {
-    req.user = null; // No token, treat as Guest
+    req.user = null;
   }
   next();
 };
