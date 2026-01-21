@@ -1,12 +1,10 @@
+// routes/analysisRoutes.js
 const express = require("express");
 const router = express.Router();
-const analysisController = require("../controllers/analysisController");
+const { getStockAnalysis } = require("../controllers/analysisController");
+const { optionalAuth } = require("../middleware/optionalAuth"); // Import new middleware
 
-// --- 1. SPECIFIC ROUTES FIRST ---
-// This MUST be above /:symbol, or "dashboard" will be treated as a stock symbol!
-router.get("/dashboard/top", analysisController.getTopPicks);
-
-// --- 2. DYNAMIC ROUTES SECOND ---
-router.get("/:symbol", analysisController.getAnalysis);
+// Use optionalAuth instead of protect
+router.get("/:symbol", optionalAuth, getStockAnalysis);
 
 module.exports = router;

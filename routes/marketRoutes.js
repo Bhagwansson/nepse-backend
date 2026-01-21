@@ -1,11 +1,9 @@
+// routes/marketRoutes.js
 const express = require("express");
 const router = express.Router();
-const marketController = require("../controllers/marketController");
+const { getLiveMarket } = require("../controllers/marketController");
 
-// Route: /api/market/history/NICA?period=1Y
-router.get("/history/:symbol", marketController.getStockHistory);
-
-// Route: /api/market/search?q=SHIVM
-router.get("/search", marketController.searchStocks);
+// REMOVE 'protect' middleware. Make it public.
+router.get("/live", getLiveMarket);
 
 module.exports = router;
