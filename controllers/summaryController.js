@@ -51,23 +51,22 @@ exports.getMarketSummary = async (req, res) => {
     // We'll calculate an "Index" proxy by averaging the top 10 stocks if you don't store the exact NEPSE index.
     // OR, if you simply want a visual trend, we can use the stored data.
 
+    // 2. Get NEPSE Index History (Last 30 Days)
     const historyDocs = await DailyMarket.find()
       .sort({ date: -1 })
       .limit(30)
-      .select("date stocks");
+      .select("date nepseIndex stocks"); // Select nepseIndex
 
-    // Calculate a "Daily Market Average" to simulate the Index Chart
     const chartData = historyDocs
       .map((doc) => {
-        // Simple average of all stocks in that day's record
-        const total = doc.stocks.reduce((acc, stock) => acc + stock.price, 0);
-        const avg = total / (doc.stocks.length || 1);
+        // USE REAL INDEX if available, otherwise fallback to stock price
+        const val = doc.nepseIndex || (doc.stocks[0] ? doc.stocks[0].price : 0);
         return {
-          value: Math.round(avg), // This acts as our "Index" line
-          label: doc.date.toISOString().slice(5, 10), // "MM-DD"
+          value: val,
+          label: doc.date.toISOString().slice(5, 10),
         };
       })
-      .reverse(); // Oldest to Newest
+      .reverse();
 
     // 3. Current NEPSE Status (Latest Day)
     const latest = chartData[chartData.length - 1] || { value: 0 };
