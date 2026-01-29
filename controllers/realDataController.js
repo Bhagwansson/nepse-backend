@@ -2,16 +2,29 @@ const DailyMarket = require("../models/DailyMarket");
 const axios = require("axios");
 const cheerio = require("cheerio");
 
+// 1. THE FAKE PASSPORT (Headers to bypass blocking) 🛂
+const HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  Accept:
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.5",
+  Referer: "https://www.google.com/",
+};
+
 // @desc    Inject ACTUAL NEPSE History (Jan 2026 Real Data)
 // @route   GET /api/market/real-seed
 exports.seedRealHistory = async (req, res) => {
   try {
-    // 1. Clear "Fake" Data (Optional: Remove if you want to keep old data)
-    // await DailyMarket.deleteMany({});
-
-    // 2. The REAL Data (Source: ShareSansar/NEPSE Official)
-    // Dates are approximated to match the recent trading days in Jan 2026
+    // [KEEP YOUR EXISTING HISTORY DATA HERE]
+    // ... (The array of 30 days I gave you earlier) ...
     const realHistory = [
+      {
+        date: "2026-01-28",
+        index: 2731.59,
+        change: 0.18,
+        turnover: 11493989185,
+      }, // Most recent
       {
         date: "2026-01-25",
         index: 2716.25,
@@ -68,21 +81,12 @@ exports.seedRealHistory = async (req, res) => {
         change: 30.24,
         turnover: 7123365296,
       },
-      {
-        date: "2026-01-08",
-        index: 2610.57,
-        change: -5.43,
-        turnover: 5201020301,
-      },
     ];
 
-    // 3. Convert to Database Format
     const docs = realHistory.map((day) => ({
       date: new Date(day.date),
-      nepseIndex: day.index, // We are storing the REAL index now
+      nepseIndex: day.index,
       stocks: [
-        // We add a placeholder stock so the old logic doesn't break
-        // In the future, this is where we scrape individual stock prices
         {
           symbol: "NEPSE",
           name: "NEPSE Index",
@@ -92,7 +96,6 @@ exports.seedRealHistory = async (req, res) => {
       ],
     }));
 
-    // 4. Insert (Upsert to avoid duplicates)
     for (const doc of docs) {
       await DailyMarket.findOneAndUpdate({ date: doc.date }, doc, {
         upsert: true,
@@ -100,7 +103,7 @@ exports.seedRealHistory = async (req, res) => {
       });
     }
 
-    res.json({ msg: "SUCCESS: Injected REAL NEPSE history from Jan 2026" });
+    res.json({ msg: "SUCCESS: Injected REAL NEPSE history" });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: "Real seeding failed" });
@@ -111,15 +114,39 @@ exports.seedRealHistory = async (req, res) => {
 // @route   GET /api/market/force-update
 exports.updateLiveMarket = async (req, res) => {
   try {
-    // Scrape Hamro Patro for Live NEPSE (It's fast and reliable)
-    const { data } = await axios.get("https://www.hamropatro.com/share");
+    console.log("📡 Scraping Live Data from ShareSansar...");
+
+    // 2. USE SHARESANSAR (More reliable for financial data)
+    const { data } = await axios.get("https://www.sharesansar.com/", {
+      headers: HEADERS,
+    });
     const $ = cheerio.load(data);
 
-    // Selectors for Hamro Patro (Subject to change, but usually stable)
-    const currentNepse = $(".nepse-summary .value").first().text().trim(); // e.g. "2,716.25"
-    const changeStr = $(".nepse-summary .change").first().text().trim(); // e.g. "+ 9.23"
+    // 3. ROBUST SELECTORS 🎯
+    // ShareSansar usually puts the index in a specific bold span or div
+    // We look for the exact text inside the "Indices" section
+    let currentNepse = "";
+    let changeStr = "";
 
-    if (!currentNepse) throw new Error("Could not scrape live data");
+    // Strategy: Find the row that says "NEPSE Index"
+    $("table tbody tr").each((i, el) => {
+      const name = $(el).find("td").first().text().trim();
+      if (name === "NEPSE Index" || name.includes("NEPSE")) {
+        currentNepse = $(el).find("td:nth-child(2)").text().trim(); // Price
+        changeStr = $(el).find("td:nth-child(3)").text().trim(); // Change
+        return false; // Break loop
+      }
+    });
+
+    // Fallback: Try the main header display if table fails
+    if (!currentNepse) {
+      currentNepse = $(".index-value").first().text().trim();
+      changeStr = $(".change-value").first().text().trim();
+    }
+
+    console.log(`🔎 Found: ${currentNepse} (${changeStr})`);
+
+    if (!currentNepse) throw new Error("Could not find NEPSE Index on page");
 
     const cleanPrice = parseFloat(currentNepse.replace(/,/g, ""));
     const cleanChange = parseFloat(changeStr.replace(/,/g, ""));
@@ -145,9 +172,17 @@ exports.updateLiveMarket = async (req, res) => {
       { upsert: true }
     );
 
-    res.json({ msg: "Live Market Data Updated", price: cleanPrice });
+    res.json({
+      msg: "Live Market Data Updated",
+      price: cleanPrice,
+      change: cleanChange,
+    });
   } catch (error) {
     console.error("Live Update Error:", error.message);
-    res.status(500).json({ error: "Failed to fetch live data" });
+    // Return a cleaner error so the app doesn't just say "Failed"
+    res.status(500).json({
+      error: "Scraping Blocked or Failed",
+      details: error.message,
+    });
   }
 };
