@@ -2,8 +2,8 @@ const express = require("express");
 const router = express.Router();
 const {
   getLiveMarket,
-  getStockHistory,
-  searchStocks,
+
+//   searchStocks,
 } = require("../controllers/marketController");
 const { getMarketSummary } = require("../controllers/summaryController"); // <--- Import New Controller
 const {
@@ -11,9 +11,11 @@ const {
   updateLiveMarket,
 } = require("../controllers/realDataController");
 
+console.log("DEBUG: getLiveMarket is:", typeof getLiveMarket);
+
 router.get("/live", getLiveMarket);
-router.get("/history/:symbol", getStockHistory);
-router.get("/search", searchStocks);
+// router.get("/history/:symbol", getStockHistory);
+// router.get("/search", searchStocks);
 router.get("/summary", getMarketSummary); // <--- New Route
 // REAL DATA ROUTES
 router.get("/real-seed", seedRealHistory); // Run this ONCE to fill history
