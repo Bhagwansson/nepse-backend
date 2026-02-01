@@ -75,4 +75,4 @@ exports.getLiveMarket = async (req, res) => {
     const fallback = await DailyMarket.findOne().sort({ date: -1 });
     res.status(200).json(fallback ? fallback.stocks : []);
   }
-};
+}; // yyyuy
