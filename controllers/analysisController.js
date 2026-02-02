@@ -1,6 +1,6 @@
 const DailyMarket = require("../models/DailyMarket");
 
-// --- 1. THE MATH ENGINE (Calculates fresh values) ---
+// --- 1. MATH ENGINE ---
 const calculateRSI = (prices, period = 14) => {
   if (prices.length < period + 1) return 50;
   let gains = 0,
@@ -24,19 +24,29 @@ const calculateEMA = (prices, period) => {
   return ema;
 };
 
-// --- 2. THE MAIN CONTROLLER ---
+// --- 2. MAIN CONTROLLER ---
 exports.getAnalysis = async (req, res) => {
   try {
     const { symbol } = req.params;
     const isPro = !!req.user;
 
-    // 1. Fetch Fresh History (Last 50-100 days from DailyMarket)
-    const history = await DailyMarket.find({
+    // 🟢 STEP 1: FETCH LATEST DATA CORRECTLY
+    // Sort by date: -1 (Newest first) so we get 2026 data, not 2021 data
+    const rawHistory = await DailyMarket.find({
       "stocks.symbol": symbol.toUpperCase(),
     })
-      .sort({ date: 1 })
-      .limit(100);
+      .sort({ date: -1 })
+      .limit(50); // Get last 50 days
 
+    if (!rawHistory || rawHistory.length === 0) {
+      return res.status(404).json({ msg: "No data found" });
+    }
+
+    // 🟢 STEP 2: REVERSE TO CHRONOLOGICAL ORDER
+    // We need Oldest -> Newest for indicator math (RSI/EMA)
+    const history = rawHistory.reverse();
+
+    // Extract just the prices for this symbol
     const prices = history
       .map((day) => {
         const s = day.stocks.find((st) => st.symbol === symbol.toUpperCase());
@@ -44,59 +54,61 @@ exports.getAnalysis = async (req, res) => {
       })
       .filter((p) => p !== null);
 
-    if (prices.length < 20) {
+    // Fail-safe if symbol missing in some records
+    if (prices.length < 5) {
       return res
         .status(404)
-        .json({ msg: "Not enough live data for analysis." });
+        .json({ msg: "Insufficient data for calculations" });
     }
 
-    // 2. Perform Live Calculations
-    const currentPrice = prices[prices.length - 1];
+    // 🟢 STEP 3: PERFORM CALCULATIONS
+    const currentPrice = prices[prices.length - 1]; // Now this is TODAY'S price
     const rsi = calculateRSI(prices, 14);
     const ema20 = calculateEMA(prices, 20);
 
-    // Simple AI Logic for Score & Signal
+    // AI Logic
     let score = 50;
     let signals = [];
     if (rsi < 30) {
       score += 20;
       signals.push("RSI is Oversold (Bullish)");
-    }
-    if (rsi > 70) {
+    } else if (rsi > 70) {
       score -= 20;
       signals.push("RSI is Overbought (Bearish)");
+    } else {
+      signals.push("RSI is Neutral");
     }
+
     if (currentPrice > ema20) {
       score += 15;
       signals.push("Price above 20-EMA (Uptrend)");
+    } else {
+      score -= 15;
+      signals.push("Price below 20-EMA (Downtrend)");
     }
 
     const recommendation = score >= 65 ? "BUY" : score <= 35 ? "SELL" : "HOLD";
 
-    // 3. YOUR PREFERRED RESPONSE STRUCTURE ✅
+    // 🟢 STEP 4: SEND RESPONSE
     let response = {
       symbol: symbol.toUpperCase(),
       price: currentPrice,
-      date: new Date(), // Set to TODAY
-      indicators: {
-        rsi: rsi, // Number for frontend .toFixed()
-      },
+      date: new Date(),
+      indicators: { rsi: rsi },
       isPro: isPro,
     };
 
     if (isPro) {
-      // 🟢 PRO: Show Fresh Live Data
       response.score = score;
       response.recommendation = recommendation;
-      response.signals = signals.length > 0 ? signals : ["Market is neutral"];
+      response.signals = signals;
       response.indicators.ema = ema20;
       response.indicators.macd = "Calculated Live";
       response.indicators.volume = "Live";
     } else {
-      // 🔴 GUEST: Same structure but Locked
       response.score = "LOCKED";
       response.recommendation = "LOGIN_TO_VIEW";
-      response.signals = ["Login to see detailed technical signals"];
+      response.signals = ["Login to see signals"];
       response.indicators.ema = "LOCKED";
       response.indicators.macd = "LOCKED";
       response.indicators.volume = "LOCKED";
@@ -104,23 +116,27 @@ exports.getAnalysis = async (req, res) => {
 
     res.json(response);
   } catch (error) {
-    console.error(error);
+    console.error("Analysis Error:", error);
     res.status(500).json({ error: "Server Error" });
   }
 };
 
-// GET /api/analysis/top-picks
+// Top Picks (Optional - leave as is or update similarly)
 exports.getTopPicks = async (req, res) => {
   try {
     const isPro = !!req.user;
-    // Fetch last record and sort by a field or mock for now
     const latest = await DailyMarket.findOne().sort({ date: -1 });
     if (!latest) return res.json([]);
 
-    const topPicks = latest.stocks.slice(0, 5).map((stock) => ({
+    // Just sorting by % change as a simple "Top Pick" proxy
+    const winners = latest.stocks
+      .sort((a, b) => b.change - a.change)
+      .slice(0, 5);
+
+    const topPicks = winners.map((stock) => ({
       symbol: stock.symbol,
       lastPrice: stock.price,
-      totalScore: isPro ? 75 : "🔒", // Logic to determine top picks
+      totalScore: isPro ? 80 : "🔒",
       recommendation: isPro ? "BUY" : "Login to view",
     }));
 
