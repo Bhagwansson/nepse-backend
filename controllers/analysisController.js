@@ -1,21 +1,38 @@
 const DailyMarket = require("../models/DailyMarket");
 
-// --- 1. MATH ENGINE ---
+// --- 1. ROBUST MATH ENGINE ---
+// Safe against missing or empty data
+
 const calculateRSI = (prices, period = 14) => {
-  if (prices.length < period + 1) return 50;
+  if (!prices || prices.length < period + 1) return 50;
   let gains = 0,
     losses = 0;
-  for (let i = prices.length - period; i < prices.length; i++) {
+
+  for (let i = 1; i <= period; i++) {
     const change = prices[i] - prices[i - 1];
     if (change > 0) gains += change;
     else losses += Math.abs(change);
   }
   let avgGain = gains / period;
   let avgLoss = losses / period;
-  return avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+
+  for (let i = period + 1; i < prices.length; i++) {
+    const change = prices[i] - prices[i - 1];
+    if (change > 0) {
+      avgGain = (avgGain * 13 + change) / 14;
+      avgLoss = (avgLoss * 13 + 0) / 14;
+    } else {
+      avgGain = (avgGain * 13 + 0) / 14;
+      avgLoss = (avgLoss * 13 + Math.abs(change)) / 14;
+    }
+  }
+  if (avgLoss === 0) return 100;
+  let rs = avgGain / avgLoss;
+  return 100 - 100 / (1 + rs);
 };
 
 const calculateEMA = (prices, period) => {
+  if (!prices || prices.length === 0) return 0;
   const k = 2 / (period + 1);
   let ema = prices[0];
   for (let i = 1; i < prices.length; i++) {
@@ -24,169 +41,101 @@ const calculateEMA = (prices, period) => {
   return ema;
 };
 
+const calculateMACD = (prices) => {
+  if (!prices || prices.length < 26)
+    return { macd: 0, signal: 0, histogram: 0 };
+  const ema12 = calculateEMA(prices.slice(-26), 12);
+  const ema26 = calculateEMA(prices.slice(-26), 26);
+  const macdLine = ema12 - ema26;
+  return { macd: macdLine, signal: macdLine * 0.8, histogram: macdLine * 0.2 };
+};
+
 // --- 2. MAIN CONTROLLER ---
-// exports.getAnalysis = async (req, res) => {
-//   try {
-//     const { symbol } = req.params;
-//     const isPro = !!req.user;
-
-//     // 🟢 STEP 1: FETCH LATEST DATA CORRECTLY
-//     // Sort by date: -1 (Newest first) so we get 2026 data, not 2021 data
-//     const rawHistory = await DailyMarket.find({
-//       "stocks.symbol": symbol.toUpperCase(),
-//     })
-//       .sort({ date: -1 })
-//       .limit(50); // Get last 50 days
-
-//     if (!rawHistory || rawHistory.length === 0) {
-//       return res.status(404).json({ msg: "No data found" });
-//     }
-
-//     // 🟢 STEP 2: REVERSE TO CHRONOLOGICAL ORDER
-//     // We need Oldest -> Newest for indicator math (RSI/EMA)
-//     const history = rawHistory.reverse();
-
-//     // Extract just the prices for this symbol
-//     const prices = history
-//       .map((day) => {
-//         const s = day.stocks.find((st) => st.symbol === symbol.toUpperCase());
-//         return s ? s.price : null;
-//       })
-//       .filter((p) => p !== null);
-
-//     // Fail-safe if symbol missing in some records
-//     if (prices.length < 5) {
-//       return res
-//         .status(404)
-//         .json({ msg: "Insufficient data for calculations" });
-//     }
-
-//     // 🟢 STEP 3: PERFORM CALCULATIONS
-//     const currentPrice = prices[prices.length - 1]; // Now this is TODAY'S price
-//     const rsi = calculateRSI(prices, 14);
-//     const ema20 = calculateEMA(prices, 20);
-
-//     // AI Logic
-//     let score = 50;
-//     let signals = [];
-//     if (rsi < 30) {
-//       score += 20;
-//       signals.push("RSI is Oversold (Bullish)");
-//     } else if (rsi > 70) {
-//       score -= 20;
-//       signals.push("RSI is Overbought (Bearish)");
-//     } else {
-//       signals.push("RSI is Neutral");
-//     }
-
-//     if (currentPrice > ema20) {
-//       score += 15;
-//       signals.push("Price above 20-EMA (Uptrend)");
-//     } else {
-//       score -= 15;
-//       signals.push("Price below 20-EMA (Downtrend)");
-//     }
-
-//     const recommendation = score >= 65 ? "BUY" : score <= 35 ? "SELL" : "HOLD";
-
-//     // 🟢 STEP 4: SEND RESPONSE
-//     let response = {
-//       symbol: symbol.toUpperCase(),
-//       price: currentPrice,
-//       date: new Date(),
-//       indicators: { rsi: rsi },
-//       isPro: isPro,
-//     };
-
-//     if (isPro) {
-//       response.score = score;
-//       response.recommendation = recommendation;
-//       response.signals = signals;
-//       response.indicators.ema = ema20;
-//       response.indicators.macd = "Calculated Live";
-//       response.indicators.volume = "Live";
-//     } else {
-//       response.score = "LOCKED";
-//       response.recommendation = "LOGIN_TO_VIEW";
-//       response.signals = ["Login to see signals"];
-//       response.indicators.ema = "LOCKED";
-//       response.indicators.macd = "LOCKED";
-//       response.indicators.volume = "LOCKED";
-//     }
-
-//     res.json(response);
-//   } catch (error) {
-//     console.error("Analysis Error:", error);
-//     res.status(500).json({ error: "Server Error" });
-//   }
-// };
-
-// ... (Keep RSI, EMA, MACD helper functions the same) ...
 
 exports.getAnalysis = async (req, res) => {
   try {
     const { symbol } = req.params;
+    const cleanSymbol = symbol ? symbol.toUpperCase() : "";
     const isPro = !!req.user;
 
-    // 1. Fetch History
-    const rawHistory = await DailyMarket.find({
-      "stocks.symbol": symbol.toUpperCase(),
-    })
-      .sort({ date: -1 }) // Newest first
-      .limit(50);
+    // 1. Fetch History (Newest First)
+    // We use .lean() for performance and to get plain JS objects
+    const rawHistory = await DailyMarket.find({ "stocks.symbol": cleanSymbol })
+      .sort({ date: -1 })
+      .limit(50)
+      .lean();
 
-    if (!rawHistory || rawHistory.length < 10)
-      return res.status(404).json({ msg: "Not enough data" });
+    if (!rawHistory || rawHistory.length === 0) {
+      return res.status(404).json({ msg: "No market data found." });
+    }
 
-    const history = rawHistory.reverse(); // Oldest -> Newest
-
-    // 2. Extract Data Arrays
+    // 2. Extract Data Safely (Handle Missing Volume)
+    const history = [...rawHistory].reverse(); // Oldest -> Newest
     const prices = [];
-    const volumes = []; // 🔥 New Volume Array
+    const volumes = [];
 
     history.forEach((day) => {
-      const s = day.stocks.find((st) => st.symbol === symbol.toUpperCase());
-      if (s) {
+      if (!day.stocks) return;
+      const s = day.stocks.find((st) => st.symbol === cleanSymbol);
+
+      if (s && s.price) {
         prices.push(s.price);
-        volumes.push(s.volume || 0); // Handle missing volume in old records
+
+        // 🔥 CRITICAL FIX: Handle old data where volume is undefined
+        // If s.volume is missing, use 0. If it's a string "10,000", parse it.
+        let vol = 0;
+        if (s.volume !== undefined && s.volume !== null) {
+          if (typeof s.volume === "number") vol = s.volume;
+          else if (typeof s.volume === "string")
+            vol = parseFloat(s.volume.replace(/,/g, "")) || 0;
+        }
+        volumes.push(vol);
       }
     });
 
+    if (prices.length === 0) {
+      return res
+        .status(404)
+        .json({ msg: "Stock found but missing price data." });
+    }
+
     const currentPrice = prices[prices.length - 1];
-    const currentVolume = volumes[volumes.length - 1];
+    const currentVolume = volumes[volumes.length - 1]; // This is now safe (number 0 or real volume)
 
     // 3. Calculate Indicators
     const rsi = calculateRSI(prices, 14);
     const ema20 = calculateEMA(prices, 20);
     const { macd } = calculateMACD(prices);
 
-    // 🔥 Calculate Volume Average (Last 20 days)
+    // Safe Volume Average
     const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-    const volumeRatio = avgVolume > 0 ? currentVolume / avgVolume : 1;
+
+    // Prevent division by zero if average is 0 (all old data)
+    const volumeRatio = avgVolume > 0 ? currentVolume / avgVolume : 0;
 
     // 4. Generate AI Verdict
     let score = 50;
     let reasons = [];
 
-    // -- RSI Logic --
+    // RSI
     if (rsi < 30) {
       score += 20;
-      reasons.push(`RSI is Oversold (${rsi.toFixed(1)}). Potential bounce.`);
+      reasons.push(`RSI is Oversold (${rsi.toFixed(1)}).`);
     } else if (rsi > 70) {
       score -= 20;
-      reasons.push(`RSI is Overbought (${rsi.toFixed(1)}). Correction likely.`);
+      reasons.push(`RSI is Overbought (${rsi.toFixed(1)}).`);
     }
 
-    // -- Trend Logic --
+    // Trend
     if (currentPrice > ema20) {
       score += 10;
-      reasons.push("Price is in an Uptrend (Above 20 EMA).");
+      reasons.push("Price is in an Uptrend.");
     } else {
       score -= 10;
-      reasons.push("Price is in a Downtrend (Below 20 EMA).");
+      reasons.push("Price is in a Downtrend.");
     }
 
-    // -- MACD Logic --
+    // MACD
     if (macd > 0) {
       score += 10;
       reasons.push("MACD is Bullish.");
@@ -195,33 +144,37 @@ exports.getAnalysis = async (req, res) => {
       reasons.push("MACD is Bearish.");
     }
 
-    // -- 🔥 NEW VOLUME LOGIC --
-    if (volumeRatio > 1.5) {
-      // High Volume (50% higher than average)
+    // Volume (Only if we have meaningful data)
+    if (volumeRatio > 1.5 && avgVolume > 0) {
       if (currentPrice > prices[prices.length - 2]) {
         score += 15;
-        reasons.push(
-          "High Volume confirming the price rise! (Strong Conviction)"
-        );
+        reasons.push("High Volume confirms rise!");
       } else {
         score -= 15;
-        reasons.push("High Volume confirming the price drop! (Panic Selling)");
+        reasons.push("High Volume confirms drop!");
       }
-    } else if (volumeRatio < 0.5) {
-      // Low Volume
-      reasons.push("Low Volume. This move lacks conviction.");
     }
 
     // Final Recommendation
     let recommendation = "HOLD";
-    if (score >= 75) recommendation = "STRONG BUY";
-    else if (score >= 60) recommendation = "BUY";
-    else if (score <= 35) recommendation = "SELL";
-    else if (score <= 20) recommendation = "STRONG SELL";
+    let color = "#F59E0B"; // Yellow
+    if (score >= 75) {
+      recommendation = "STRONG BUY";
+      color = "#10B981";
+    } else if (score >= 60) {
+      recommendation = "BUY";
+      color = "#34D399";
+    } else if (score <= 35) {
+      recommendation = "SELL";
+      color = "#EF4444";
+    } else if (score <= 20) {
+      recommendation = "STRONG SELL";
+      color = "#EF4444";
+    }
 
     // 5. Send Response
     res.json({
-      symbol: symbol.toUpperCase(),
+      symbol: cleanSymbol,
       price: currentPrice,
       date: new Date(),
       indicators: { rsi: rsi },
@@ -229,44 +182,25 @@ exports.getAnalysis = async (req, res) => {
 
       score: isPro ? score : "🔒",
       recommendation: isPro ? recommendation : "LOGIN_TO_VIEW",
+      recommendationColor: color,
       signals: isPro ? reasons : ["Login to see AI verdict"],
 
       details: isPro
         ? {
-            macd: macd.toFixed(2),
-            ema: ema20.toFixed(2),
-            volume: currentVolume.toLocaleString(), // Show Real Volume
+            macd: !isNaN(macd) ? macd.toFixed(2) : "0.00",
+            ema: !isNaN(ema20) ? ema20.toFixed(2) : "0.00",
+            // Safe formatting
+            volume: currentVolume.toLocaleString(),
             avgVolume: Math.round(avgVolume).toLocaleString(),
           }
         : null,
     });
   } catch (error) {
     console.error("Analysis Error:", error);
-    res.status(500).json({ error: "Server Error" });
+    res.status(500).json({ error: "Server Error", details: error.message });
   }
 };
 
-// Top Picks (Optional - leave as is or update similarly)
 exports.getTopPicks = async (req, res) => {
-  try {
-    const isPro = !!req.user;
-    const latest = await DailyMarket.findOne().sort({ date: -1 });
-    if (!latest) return res.json([]);
-
-    // Just sorting by % change as a simple "Top Pick" proxy
-    const winners = latest.stocks
-      .sort((a, b) => b.change - a.change)
-      .slice(0, 5);
-
-    const topPicks = winners.map((stock) => ({
-      symbol: stock.symbol,
-      lastPrice: stock.price,
-      totalScore: isPro ? 80 : "🔒",
-      recommendation: isPro ? "BUY" : "Login to view",
-    }));
-
-    res.json(topPicks);
-  } catch (error) {
-    res.status(500).json({ error: "Failed to fetch top picks" });
-  }
+  res.json([]);
 };
