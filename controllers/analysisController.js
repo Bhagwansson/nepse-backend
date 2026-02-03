@@ -1,6 +1,6 @@
 const DailyMarket = require("../models/DailyMarket");
 
-// --- 1. MATH ENGINE (Returns Safe Numbers) ---
+// --- 1. MATH ENGINE ---
 const calculateRSI = (prices, period = 14) => {
   if (!prices || prices.length < period + 1) return 50;
   let gains = 0,
@@ -39,12 +39,11 @@ const calculateEMA = (prices, period) => {
 };
 
 const calculateMACD = (prices) => {
-  if (!prices || prices.length < 26)
-    return { macd: 0, signal: 0, histogram: 0 };
+  if (!prices || prices.length < 26) return { macd: 0 };
   const ema12 = calculateEMA(prices.slice(-26), 12);
   const ema26 = calculateEMA(prices.slice(-26), 26);
   const macdLine = ema12 - ema26;
-  return { macd: isNaN(macdLine) ? 0 : macdLine, signal: 0, histogram: 0 };
+  return { macd: isNaN(macdLine) ? 0 : macdLine };
 };
 
 // --- 2. MAIN CONTROLLER ---
@@ -64,7 +63,6 @@ exports.getAnalysis = async (req, res) => {
       return res.status(404).json({ msg: "No market data found." });
     }
 
-    // 2. Extract Data
     const history = [...rawHistory].reverse();
     const prices = [];
     const volumes = [];
@@ -83,7 +81,7 @@ exports.getAnalysis = async (req, res) => {
             vol = parseFloat(s.volume.replace(/,/g, "")) || 0;
         }
         volumes.push(vol);
-        lastDate = day.date; // Use the actual date from DB
+        lastDate = day.date;
       }
     });
 
@@ -98,83 +96,117 @@ exports.getAnalysis = async (req, res) => {
     const ema20 = calculateEMA(prices, 20);
     const { macd } = calculateMACD(prices);
 
-    // 4. Generate AI Verdict Strings
-    let score = 50;
-    let reasons = [];
+    const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+    const volumeRatio = avgVolume > 0 ? currentVolume / avgVolume : 1;
 
+    // 4. Generate "Smart Paragraphs"
+    let score = 50;
+
+    // --- A. Build Technical Summary ---
+    let techText = "";
+
+    // RSI Text
     if (rsiVal < 30) {
       score += 20;
-      reasons.push(`RSI is Oversold (${rsiVal.toFixed(1)})`);
+      techText += `The RSI is currently oversold at ${rsiVal.toFixed(
+        1
+      )}, indicating the stock is undervalued and due for a bounce. `;
     } else if (rsiVal > 70) {
       score -= 20;
-      reasons.push(`RSI is Overbought (${rsiVal.toFixed(1)})`);
+      techText += `The RSI is overbought at ${rsiVal.toFixed(
+        1
+      )}, suggesting the price may be too high and could pull back. `;
     } else {
-      reasons.push(`RSI is Neutral (${rsiVal.toFixed(1)})`);
+      techText += `The RSI is in the neutral zone at ${rsiVal.toFixed(
+        1
+      )}, leaving room for price movement in either direction. `;
     }
 
+    // EMA Text
     if (currentPrice > ema20) {
       score += 15;
-      reasons.push("Uptrend: Price > 20 EMA");
+      techText += `The stock is trading above its 20-day Moving Average (Rs. ${ema20.toFixed(
+        0
+      )}), confirming a short-term uptrend. `;
     } else {
       score -= 15;
-      reasons.push("Downtrend: Price < 20 EMA");
+      techText += `The stock is trading below its 20-day Moving Average (Rs. ${ema20.toFixed(
+        0
+      )}), indicating short-term bearish pressure. `;
     }
 
+    // MACD Text
     if (macd > 0) {
       score += 10;
-      reasons.push("Bullish Momentum (MACD +)");
+      techText += `MACD momentum is positive (${macd.toFixed(
+        2
+      )}), supporting a bullish outlook. `;
     } else {
       score -= 10;
-      reasons.push("Bearish Momentum (MACD -)");
+      techText += `MACD momentum is negative (${macd.toFixed(
+        2
+      )}), suggesting sellers are in control. `;
     }
 
-    // 5. Final Verdict
+    // Volume Text
+    if (volumeRatio > 1.2)
+      techText += `Additionally, trading volume is higher than usual, showing strong conviction in today's move.`;
+    else
+      techText += `Trading volume is normal, consistent with the recent trend.`;
+
+    // --- B. Build Final Verdict ---
     let recommendation = "HOLD";
+    let verdictText = "";
     let color = "#F59E0B";
+
     if (score >= 70) {
       recommendation = "STRONG BUY";
       color = "#10B981";
+      verdictText =
+        "All indicators align for a strong upward move. The combination of bullish momentum and uptrend suggests this is a great entry point for buyers.";
     } else if (score >= 60) {
       recommendation = "BUY";
       color = "#34D399";
+      verdictText =
+        "The technicals look good. While not explosive, the trend is positive and buying on dips is recommended.";
     } else if (score <= 40) {
       recommendation = "SELL";
       color = "#EF4444";
+      verdictText =
+        "The chart is showing weakness. Indicators suggest the price may drop further, making it a good time to book profits or exit.";
     } else if (score <= 25) {
       recommendation = "STRONG SELL";
       color = "#EF4444";
+      verdictText =
+        "Significant bearish signals detected. Momentum, trend, and relative strength are all negative. Staying away is advised.";
+    } else {
+      verdictText =
+        "The market is undecided. Indicators are mixed with no clear direction. It is best to wait for a clearer signal before entering a trade.";
     }
 
-    // 6. Response
+    // 5. Response
     const response = {
       symbol: cleanSymbol,
       price: currentPrice,
-      date: lastDate, // Fixes the Date issue
+      date: lastDate,
       indicators: {
-        rsi: rsiVal, // Send NUMBER (e.g. 52.88)
+        rsi: Number(rsiVal),
       },
       isPro,
 
       score: isPro ? score : "🔒",
       recommendation: isPro ? recommendation : "LOGIN_TO_VIEW",
       recommendationColor: color,
-      signals: isPro ? reasons : ["Login to see AI verdict"],
 
-      // Populate details just in case frontend needs it
-      details: isPro
-        ? {
-            macd: macd.toFixed(2),
-            ema: ema20.toFixed(2),
-          }
-        : null,
+      // 🔥 NEW FIELDS FOR PARAGRAPHS
+      technicalSummary: isPro ? techText : "Login to view detailed analysis.",
+      finalVerdict: isPro ? verdictText : "Login to view the AI verdict.",
     };
 
     if (isPro) {
-      // ✅ FIX: Send NUMBERS, not strings.
-      // Frontend .toFixed(2) works on numbers, fails on strings.
-      response.indicators.macd = macd;
-      response.indicators.ema = ema20;
-      response.indicators.volume = currentVolume;
+      response.indicators.macd = Number(macd).toFixed(2);
+      response.indicators.ema = Number(ema20).toFixed(2);
+      response.indicators.volume = Number(currentVolume).toLocaleString(); // Comma separated (e.g. 12,500)
     } else {
       response.indicators.macd = "LOCKED";
       response.indicators.ema = "LOCKED";
