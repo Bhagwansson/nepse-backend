@@ -24,26 +24,27 @@ const calculateRSI = (prices, period = 14) => {
   }
   if (avgLoss === 0) return 100;
   const rs = avgGain / avgLoss;
-  const res = 100 - 100 / (1 + rs);
-  return isNaN(res) ? 50 : res;
+  return 100 - 100 / (1 + rs);
 };
 
 const calculateEMA = (prices, period) => {
   if (!prices || prices.length === 0) return 0;
   const k = 2 / (period + 1);
-  let ema = prices[0];
-  for (let i = 1; i < prices.length; i++) {
+  let sma = 0;
+  for (let i = 0; i < period; i++) sma += prices[i];
+  sma /= period;
+  let ema = sma;
+  for (let i = period; i < prices.length; i++) {
     ema = prices[i] * k + ema * (1 - k);
   }
-  return isNaN(ema) ? prices[prices.length - 1] : ema;
+  return ema;
 };
 
 const calculateMACD = (prices) => {
-  if (!prices || prices.length < 26) return { macd: 0 };
-  const ema12 = calculateEMA(prices.slice(-26), 12);
-  const ema26 = calculateEMA(prices.slice(-26), 26);
-  const macdLine = ema12 - ema26;
-  return { macd: isNaN(macdLine) ? 0 : macdLine };
+  if (!prices || prices.length < 30) return { macd: 0 };
+  const ema12 = calculateEMA(prices, 12);
+  const ema26 = calculateEMA(prices, 26);
+  return { macd: ema12 - ema26 };
 };
 
 // --- 2. MAIN CONTROLLER ---
@@ -51,12 +52,15 @@ exports.getAnalysis = async (req, res) => {
   try {
     const { symbol } = req.params;
     const cleanSymbol = symbol ? symbol.toUpperCase() : "";
+
+    // 🔥 DEVELOPER BYPASS: Force Unlock
+    // Change this back to `!!req.user` later when login is ready
     const isPro = true;
 
     // 1. Fetch History
     const rawHistory = await DailyMarket.find({ "stocks.symbol": cleanSymbol })
       .sort({ date: -1 })
-      .limit(50)
+      .limit(200)
       .lean();
 
     if (!rawHistory || rawHistory.length === 0) {
@@ -96,65 +100,55 @@ exports.getAnalysis = async (req, res) => {
     const ema20 = calculateEMA(prices, 20);
     const { macd } = calculateMACD(prices);
 
-    const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+    const validVolumes = volumes.slice(-20);
+    const avgVolume =
+      validVolumes.reduce((a, b) => a + b, 0) / (validVolumes.length || 1);
     const volumeRatio = avgVolume > 0 ? currentVolume / avgVolume : 1;
 
-    // 4. Generate "Smart Paragraphs"
+    // 4. Generate Paragraphs
     let score = 50;
+    let techText = `Trading volume today was ${currentVolume.toLocaleString()} units. `;
 
-    // --- A. Build Technical Summary ---
-    let techText = "";
-
-    // RSI Text
     if (rsiVal < 30) {
       score += 20;
-      techText += `The RSI is currently oversold at ${rsiVal.toFixed(
+      techText += `The RSI is Oversold at ${rsiVal.toFixed(
         1
-      )}, indicating the stock is undervalued and due for a bounce. `;
+      )}, often preceding a bounce. `;
     } else if (rsiVal > 70) {
       score -= 20;
-      techText += `The RSI is overbought at ${rsiVal.toFixed(
+      techText += `The RSI is Overbought at ${rsiVal.toFixed(
         1
-      )}, suggesting the price may be too high and could pull back. `;
+      )}, suggesting a pullback. `;
     } else {
-      techText += `The RSI is in the neutral zone at ${rsiVal.toFixed(
+      techText += `The RSI is Neutral at ${rsiVal.toFixed(
         1
-      )}, leaving room for price movement in either direction. `;
+      )}, showing stable momentum. `;
     }
 
-    // EMA Text
     if (currentPrice > ema20) {
       score += 15;
-      techText += `The stock is trading above its 20-day Moving Average (Rs. ${ema20.toFixed(
+      techText += `Price is above the 20-day EMA (Rs. ${ema20.toFixed(
         0
-      )}), confirming a short-term uptrend. `;
+      )}), confirming an uptrend. `;
     } else {
       score -= 15;
-      techText += `The stock is trading below its 20-day Moving Average (Rs. ${ema20.toFixed(
+      techText += `Price is below the 20-day EMA (Rs. ${ema20.toFixed(
         0
-      )}), indicating short-term bearish pressure. `;
+      )}), indicating weakness. `;
     }
 
-    // MACD Text
     if (macd > 0) {
       score += 10;
-      techText += `MACD momentum is positive (${macd.toFixed(
+      techText += `MACD is positive (${macd.toFixed(
         2
-      )}), supporting a bullish outlook. `;
+      )}), supporting bullish sentiment. `;
     } else {
       score -= 10;
-      techText += `MACD momentum is negative (${macd.toFixed(
+      techText += `MACD is negative (${macd.toFixed(
         2
-      )}), suggesting sellers are in control. `;
+      )}), showing bearish pressure. `;
     }
 
-    // Volume Text
-    if (volumeRatio > 1.2)
-      techText += `Additionally, trading volume is higher than usual, showing strong conviction in today's move.`;
-    else
-      techText += `Trading volume is normal, consistent with the recent trend.`;
-
-    // --- B. Build Final Verdict ---
     let recommendation = "HOLD";
     let verdictText = "";
     let color = "#F59E0B";
@@ -163,25 +157,25 @@ exports.getAnalysis = async (req, res) => {
       recommendation = "STRONG BUY";
       color = "#10B981";
       verdictText =
-        "All indicators align for a strong upward move. The combination of bullish momentum and uptrend suggests this is a great entry point for buyers.";
+        "Indicators align for a strong upward move. Positive momentum suggests a great entry point.";
     } else if (score >= 60) {
       recommendation = "BUY";
       color = "#34D399";
       verdictText =
-        "The technicals look good. While not explosive, the trend is positive and buying on dips is recommended.";
+        "The outlook is positive. Technicals suggest growth; buying on dips is recommended.";
     } else if (score <= 40) {
       recommendation = "SELL";
       color = "#EF4444";
       verdictText =
-        "The chart is showing weakness. Indicators suggest the price may drop further, making it a good time to book profits or exit.";
+        "Weakness detected. The trend is downward; consider exiting or waiting.";
     } else if (score <= 25) {
       recommendation = "STRONG SELL";
       color = "#EF4444";
       verdictText =
-        "Significant bearish signals detected. Momentum, trend, and relative strength are all negative. Staying away is advised.";
+        "Critical bearish signals. Momentum is negative. Avoid long positions.";
     } else {
       verdictText =
-        "The market is undecided. Indicators are mixed with no clear direction. It is best to wait for a clearer signal before entering a trade.";
+        "The market is undecided. Signals are mixed. Best to wait for a clearer direction.";
     }
 
     // 5. Response
@@ -189,16 +183,11 @@ exports.getAnalysis = async (req, res) => {
       symbol: cleanSymbol,
       price: currentPrice,
       date: lastDate,
-      indicators: {
-        rsi: Number(rsiVal),
-      },
+      indicators: { rsi: Number(rsiVal) },
       isPro,
-
       score: isPro ? score : "🔒",
       recommendation: isPro ? recommendation : "LOGIN_TO_VIEW",
       recommendationColor: color,
-
-      // 🔥 NEW FIELDS FOR PARAGRAPHS
       technicalSummary: isPro ? techText : "Login to view detailed analysis.",
       finalVerdict: isPro ? verdictText : "Login to view the AI verdict.",
     };
@@ -206,7 +195,7 @@ exports.getAnalysis = async (req, res) => {
     if (isPro) {
       response.indicators.macd = Number(macd).toFixed(2);
       response.indicators.ema = Number(ema20).toFixed(2);
-      response.indicators.volume = Number(currentVolume).toLocaleString(); // Comma separated (e.g. 12,500)
+      response.indicators.volume = Number(currentVolume).toLocaleString();
     } else {
       response.indicators.macd = "LOCKED";
       response.indicators.ema = "LOCKED";
