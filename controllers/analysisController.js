@@ -51,7 +51,7 @@ exports.getAnalysis = async (req, res) => {
   try {
     const { symbol } = req.params;
     const cleanSymbol = symbol ? symbol.toUpperCase() : "";
-    const isPro = !!req.user;
+    const isPro = true;
 
     // 1. Fetch History
     const rawHistory = await DailyMarket.find({ "stocks.symbol": cleanSymbol })
