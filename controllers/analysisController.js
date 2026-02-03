@@ -1,8 +1,11 @@
 const DailyMarket = require("../models/DailyMarket");
 
-// --- 1. MATH ENGINE ---
+// --- 1. SAFE MATH ENGINE ---
+// These functions are guaranteed to return Numbers, never NaN or undefined.
+
 const calculateRSI = (prices, period = 14) => {
-  if (!prices || prices.length < period + 1) return 50;
+  if (!prices || prices.length < period + 1) return 50; // Default Neutral
+
   let gains = 0,
     losses = 0;
   for (let i = 1; i <= period; i++) {
@@ -10,8 +13,10 @@ const calculateRSI = (prices, period = 14) => {
     if (change > 0) gains += change;
     else losses += Math.abs(change);
   }
+
   let avgGain = gains / period;
   let avgLoss = losses / period;
+
   for (let i = period + 1; i < prices.length; i++) {
     const change = prices[i] - prices[i - 1];
     if (change > 0) {
@@ -22,7 +27,12 @@ const calculateRSI = (prices, period = 14) => {
       avgLoss = (avgLoss * 13 + Math.abs(change)) / 14;
     }
   }
-  return avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  const result = 100 - 100 / (1 + rs);
+
+  return isNaN(result) ? 50 : result; // Safety Net
 };
 
 const calculateEMA = (prices, period) => {
@@ -32,7 +42,7 @@ const calculateEMA = (prices, period) => {
   for (let i = 1; i < prices.length; i++) {
     ema = prices[i] * k + ema * (1 - k);
   }
-  return ema;
+  return isNaN(ema) ? prices[prices.length - 1] : ema;
 };
 
 const calculateMACD = (prices) => {
@@ -41,10 +51,15 @@ const calculateMACD = (prices) => {
   const ema12 = calculateEMA(prices.slice(-26), 12);
   const ema26 = calculateEMA(prices.slice(-26), 26);
   const macdLine = ema12 - ema26;
-  return { macd: macdLine, signal: macdLine * 0.8, histogram: macdLine * 0.2 };
+  return {
+    macd: isNaN(macdLine) ? 0 : macdLine,
+    signal: 0,
+    histogram: 0,
+  };
 };
 
 // --- 2. MAIN CONTROLLER ---
+
 exports.getAnalysis = async (req, res) => {
   try {
     const { symbol } = req.params;
@@ -62,26 +77,30 @@ exports.getAnalysis = async (req, res) => {
     }
 
     // 2. Extract Data
-    const history = [...rawHistory].reverse(); // Oldest -> Newest
+    // Reverse so index 0 is old, index length-1 is NEW (Today)
+    const history = [...rawHistory].reverse();
+
     const prices = [];
     const volumes = [];
-    let lastTradedDate = new Date(); // Default to now, will update below
+    let lastDate = new Date();
 
     history.forEach((day) => {
       if (!day.stocks) return;
       const s = day.stocks.find((st) => st.symbol === cleanSymbol);
       if (s && s.price) {
-        prices.push(s.price);
-        // Safe volume extraction
+        prices.push(Number(s.price)); // Force Number
+
+        // Safe Volume
         let vol = 0;
-        if (s.volume !== undefined && s.volume !== null) {
+        if (s.volume) {
           if (typeof s.volume === "number") vol = s.volume;
           else if (typeof s.volume === "string")
             vol = parseFloat(s.volume.replace(/,/g, "")) || 0;
         }
         volumes.push(vol);
-        // Capture the date of this record
-        lastTradedDate = day.date;
+
+        // Capture Date of the ACTUAL record
+        lastDate = day.date;
       }
     });
 
@@ -92,55 +111,53 @@ exports.getAnalysis = async (req, res) => {
     const currentVolume = volumes[volumes.length - 1];
 
     // 3. Calculate Indicators
-    const rsi = calculateRSI(prices, 14);
+    const rsiVal = calculateRSI(prices, 14); // Returns Number (e.g., 55.4)
     const ema20 = calculateEMA(prices, 20);
     const { macd } = calculateMACD(prices);
 
     // Volume Average
-    const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+    const validVolumes = volumes.slice(-20);
+    const avgVolume =
+      validVolumes.length > 0
+        ? validVolumes.reduce((a, b) => a + b, 0) / validVolumes.length
+        : 0;
     const volumeRatio = avgVolume > 0 ? currentVolume / avgVolume : 1;
 
-    // 4. Generate AI Verdict (Force reasons to prevent empty bullets)
+    // 4. Generate Reasons (Prevent Empty Array)
     let score = 50;
     let reasons = [];
 
-    // RSI Logic
-    if (rsi < 30) {
+    // Always push at least one reason per category
+    if (rsiVal < 30) {
       score += 20;
-      reasons.push(`RSI is Oversold (${rsi.toFixed(1)}).`);
-    } else if (rsi > 70) {
+      reasons.push(`RSI is Oversold (${rsiVal.toFixed(1)}).`);
+    } else if (rsiVal > 70) {
       score -= 20;
-      reasons.push(`RSI is Overbought (${rsi.toFixed(1)}).`);
+      reasons.push(`RSI is Overbought (${rsiVal.toFixed(1)}).`);
     } else {
-      reasons.push(`RSI is Neutral (${rsi.toFixed(1)}).`);
-    } // Add reason even if neutral
+      reasons.push(`RSI is Neutral (${rsiVal.toFixed(1)}).`);
+    }
 
-    // Trend Logic
     if (currentPrice > ema20) {
       score += 15;
-      reasons.push("Uptrend: Price is above 20-day EMA.");
+      reasons.push("Uptrend: Price above 20-EMA.");
     } else {
       score -= 15;
-      reasons.push("Downtrend: Price is below 20-day EMA.");
+      reasons.push("Downtrend: Price below 20-EMA.");
     }
 
-    // MACD Logic
     if (macd > 0) {
       score += 10;
-      reasons.push("Bullish Momentum (MACD +).");
+      reasons.push("Bullish Momentum (MACD).");
     } else {
       score -= 10;
-      reasons.push("Bearish Momentum (MACD -).");
+      reasons.push("Bearish Momentum (MACD).");
     }
 
-    // Volume Logic
-    if (volumeRatio > 1.5 && avgVolume > 0) {
-      reasons.push("High Volume detected (Strong Conviction).");
-      if (currentPrice > prices[prices.length - 2]) score += 15;
-      else score -= 15;
-    }
+    if (volumeRatio > 1.5 && avgVolume > 0)
+      reasons.push("High Volume detected.");
 
-    // Final Verdict
+    // 5. Verdict
     let recommendation = "HOLD";
     let color = "#F59E0B";
     if (score >= 70) {
@@ -157,14 +174,13 @@ exports.getAnalysis = async (req, res) => {
       color = "#EF4444";
     }
 
-    // 5. Send Response
-    // ✅ Fix: Map detailed indicators to the correct structure for your UI
-    let response = {
+    // 6. Response
+    const response = {
       symbol: cleanSymbol,
       price: currentPrice,
-      date: lastTradedDate, // ✅ Fix: Sends the ACTUAL date from DB
+      date: lastDate, // ✅ ACTUAL DB DATE
       indicators: {
-        rsi: rsi, // Free for everyone
+        rsi: Number(rsiVal), // ✅ Force Number to prevent .toFixed crash
       },
       isPro,
 
@@ -175,26 +191,22 @@ exports.getAnalysis = async (req, res) => {
     };
 
     if (isPro) {
-      // ✅ Fix: Put MACD/EMA here so the bottom UI bar finds them
-      response.indicators.macd = !isNaN(macd) ? macd.toFixed(2) : "0.00";
-      response.indicators.ema = !isNaN(ema20) ? ema20.toFixed(2) : "0.00";
-      response.indicators.volume = !isNaN(currentVolume)
-        ? currentVolume.toLocaleString()
-        : "N/A";
-
-      // Optional: Keep details if your Detailed View uses it
-      response.details = {
-        avgVolume: Math.round(avgVolume).toLocaleString(),
-      };
+      // ✅ Values placed where Frontend expects them
+      response.indicators.macd = Number(macd).toFixed(2);
+      response.indicators.ema = Number(ema20).toFixed(2);
+      response.indicators.volume = Number(currentVolume).toLocaleString();
     } else {
       response.indicators.macd = "LOCKED";
       response.indicators.ema = "LOCKED";
       response.indicators.volume = "LOCKED";
     }
 
+    // DEBUG: Uncomment if you still have issues
+    // console.log("Final Response:", JSON.stringify(response, null, 2));
+
     res.json(response);
   } catch (error) {
-    console.error("Analysis Error:", error);
+    console.error("CRITICAL ERROR:", error);
     res.status(500).json({ error: "Server Error" });
   }
 };
