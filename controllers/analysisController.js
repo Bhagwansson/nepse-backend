@@ -1,42 +1,94 @@
 const DailyMarket = require("../models/DailyMarket");
 
-// --- 1. PROFESSIONAL MATH ENGINE (Vectorized) ---
+// --- 1. PRECISION MATH ENGINE (TradingView Standard) ---
 
-// Helper: Calculate SMA (Simple Moving Average) for the first 'n' elements
-const calculateSMA = (data, period) => {
-  if (data.length < period) return 0;
-  let sum = 0;
-  for (let i = 0; i < period; i++) sum += data[i];
-  return sum / period;
+// Helper: Calculate SMA (Simple Moving Average)
+const calculateSMA = (data) => {
+  if (!data || data.length === 0) return 0;
+  const sum = data.reduce((a, b) => a + b, 0);
+  return sum / data.length;
 };
 
-// Helper: Calculate EMA Array (Returns an array of EMAs)
-const calculateEMAArray = (prices, period) => {
-  if (prices.length < period) return Array(prices.length).fill(0);
-
+// Helper: Calculate Standard EMA Array
+// Rule: First value is SMA. Subsequent are (Price - PrevEMA) * k + PrevEMA
+const calculateEMAArray = (values, period) => {
   const k = 2 / (period + 1);
-  const emaArray = new Array(prices.length).fill(0);
+  const emaArray = new Array(values.length).fill(null); // Use null for invalid periods
 
-  // Step 1: Initialize with SMA
-  let sma = 0;
-  for (let i = 0; i < period; i++) sma += prices[i];
-  sma /= period;
-  emaArray[period - 1] = sma;
+  // We need at least 'period' data points to start
+  if (values.length < period) return emaArray;
 
-  // Step 2: Calculate EMA for the rest
-  for (let i = period; i < prices.length; i++) {
-    emaArray[i] = (prices[i] - emaArray[i - 1]) * k + emaArray[i - 1];
+  // 1. First valid point is SMA of first 'period' values
+  // Index: period - 1
+  const initialSlice = values.slice(0, period);
+  const initialSMA = calculateSMA(initialSlice);
+  emaArray[period - 1] = initialSMA;
+
+  // 2. Calculate rest
+  for (let i = period; i < values.length; i++) {
+    // EMA = (Price * k) + (PrevEMA * (1-k))
+    // or: (Price - PrevEMA) * k + PrevEMA
+    emaArray[i] = (values[i] - emaArray[i - 1]) * k + emaArray[i - 1];
   }
+
   return emaArray;
 };
 
-// RSI (Relative Strength Index)
+// FULL MACD (12, 26, 9)
+const calculateExactMACD = (prices) => {
+  // Need significant history for convergence
+  if (!prices || prices.length < 50)
+    return { macd: 0, signal: 0, histogram: 0 };
+
+  // 1. Calculate Fast (12) and Slow (26) EMAs
+  const ema12 = calculateEMAArray(prices, 12);
+  const ema26 = calculateEMAArray(prices, 26);
+
+  // 2. Calculate MACD Line (Fast - Slow)
+  // It will contain 'null' where slow EMA is not yet valid
+  const macdLine = [];
+  for (let i = 0; i < prices.length; i++) {
+    if (ema12[i] !== null && ema26[i] !== null) {
+      macdLine.push(ema12[i] - ema26[i]);
+    } else {
+      macdLine.push(null);
+    }
+  }
+
+  // 3. Calculate Signal Line (9 EMA of MACD Line)
+  // We must pass ONLY the valid numbers to the EMA function, but keep track of indices
+  // Filter out nulls to feed into EMA calculator
+  const validMacdValues = macdLine.filter((val) => val !== null);
+
+  // Calculate EMA(9) on the MACD values
+  const signalLineValues = calculateEMAArray(validMacdValues, 9);
+
+  // 4. Align the results
+  // The signalLineValues array corresponds to the tail of the prices array.
+  // We want the VERY LAST value.
+
+  const currentMACD = validMacdValues[validMacdValues.length - 1];
+  const currentSignal = signalLineValues[signalLineValues.length - 1];
+
+  if (currentMACD == null || currentSignal == null) {
+    return { macd: 0, signal: 0, histogram: 0 };
+  }
+
+  const histogram = currentMACD - currentSignal;
+
+  return {
+    macd: currentMACD,
+    signal: currentSignal,
+    histogram: histogram,
+  };
+};
+
+// RSI Calculation (Standard Wilder's)
 const calculateRSI = (prices, period = 14) => {
   if (!prices || prices.length < period + 1) return 50;
 
   let gains = 0,
     losses = 0;
-  // First Average (SMA)
   for (let i = 1; i <= period; i++) {
     const change = prices[i] - prices[i - 1];
     if (change > 0) gains += change;
@@ -45,7 +97,6 @@ const calculateRSI = (prices, period = 14) => {
   let avgGain = gains / period;
   let avgLoss = losses / period;
 
-  // Smoothed Averages (Wilder's Smoothing)
   for (let i = period + 1; i < prices.length; i++) {
     const change = prices[i] - prices[i - 1];
     if (change > 0) {
@@ -56,52 +107,9 @@ const calculateRSI = (prices, period = 14) => {
       avgLoss = (avgLoss * 13 + Math.abs(change)) / 14;
     }
   }
-
   if (avgLoss === 0) return 100;
   const rs = avgGain / avgLoss;
   return 100 - 100 / (1 + rs);
-};
-
-// FULL MACD (Line, Signal, Histogram)
-const calculateFullMACD = (prices) => {
-  if (!prices || prices.length < 35)
-    return { macd: 0, signal: 0, histogram: 0 };
-
-  // 1. Calculate EMA-12 and EMA-26 Arrays
-  const ema12Array = calculateEMAArray(prices, 12);
-  const ema26Array = calculateEMAArray(prices, 26);
-
-  // 2. Calculate MACD Line Array (EMA12 - EMA26)
-  const macdLineArray = [];
-  for (let i = 0; i < prices.length; i++) {
-    // We can only calc MACD once we have both EMAs (index >= 25)
-    if (i >= 25) {
-      macdLineArray.push(ema12Array[i] - ema26Array[i]);
-    } else {
-      macdLineArray.push(0);
-    }
-  }
-
-  // 3. Calculate Signal Line (9-day EMA of the MACD Line)
-  // We need to pass the macdLineArray BUT we need to ignore the initial zeros
-  // Slice off the invalid start to get a clean array for EMA calc
-  const validMacdStart = 26; // approx
-  const cleanMacdInput = macdLineArray.slice(validMacdStart);
-
-  if (cleanMacdInput.length < 9) return { macd: 0, signal: 0, histogram: 0 };
-
-  const signalLineClean = calculateEMAArray(cleanMacdInput, 9);
-
-  // 4. Get Final Values (Latest)
-  const currentMACD = macdLineArray[macdLineArray.length - 1];
-  const currentSignal = signalLineClean[signalLineClean.length - 1];
-  const histogram = currentMACD - currentSignal;
-
-  return {
-    macd: currentMACD,
-    signal: currentSignal,
-    histogram: histogram,
-  };
 };
 
 // --- 2. MAIN CONTROLLER ---
@@ -109,14 +117,12 @@ exports.getAnalysis = async (req, res) => {
   try {
     const { symbol } = req.params;
     const cleanSymbol = symbol ? symbol.toUpperCase() : "";
+    const isPro = true; // 🔥 Unlocked for Dev
 
-    // 🔥 DEV MODE: UNLOCKED
-    const isPro = true;
-
-    // 1. Fetch History (Increased to 400 for Accuracy)
+    // 1. Fetch History (Max 400 for precision)
     const rawHistory = await DailyMarket.find({ "stocks.symbol": cleanSymbol })
       .sort({ date: -1 })
-      .limit(400) // Need ~300+ for EMA convergence
+      .limit(400)
       .lean();
 
     if (!rawHistory || rawHistory.length === 0) {
@@ -135,6 +141,7 @@ exports.getAnalysis = async (req, res) => {
       if (s && s.price) {
         prices.push(Number(s.price));
 
+        // Safe Volume
         let vol = 0;
         if (s.volume) {
           if (typeof s.volume === "number") vol = s.volume;
@@ -151,7 +158,7 @@ exports.getAnalysis = async (req, res) => {
 
     const currentPrice = prices[prices.length - 1];
 
-    // Volume Fallback: If today is 0 (scraper error), look back 1 day
+    // Volume Fallback
     let currentVolume = volumes[volumes.length - 1];
     if (currentVolume === 0 && volumes.length > 1) {
       currentVolume = volumes[volumes.length - 2];
@@ -160,66 +167,62 @@ exports.getAnalysis = async (req, res) => {
     // 3. Calculate Indicators
     const rsiVal = calculateRSI(prices, 14);
 
-    // Single Scalar EMA for simple Trend Check
-    const ema20 = calculateEMAArray(prices, 20).pop();
+    // EMA for Trend (20-day)
+    const ema20Array = calculateEMAArray(prices, 20);
+    const ema20 = ema20Array[ema20Array.length - 1] || 0;
 
-    // Full Vector MACD (This matches Charting software)
-    const { macd, signal, histogram } = calculateFullMACD(prices);
+    // 🔥 EXACT MACD CALCULATION
+    const { macd, signal, histogram } = calculateExactMACD(prices);
 
-    // Volume Math
+    // Volume Stats
     const validVolumes = volumes.slice(-20);
     const avgVolume =
       validVolumes.reduce((a, b) => a + b, 0) / (validVolumes.length || 1);
-    const volumeRatio = avgVolume > 0 ? currentVolume / avgVolume : 0;
 
-    // 4. Generate Analysis Text
+    // 4. Text Generation
     let score = 50;
     let techText = `Trading volume is ${currentVolume.toLocaleString()}. `;
 
-    // RSI Logic
+    // RSI Text
     if (rsiVal < 30) {
       score += 20;
-      techText += `RSI is Oversold (${rsiVal.toFixed(
-        1
-      )}), suggesting a potential bounce. `;
+      techText += `RSI is Oversold (${rsiVal.toFixed(1)}), potential bounce. `;
     } else if (rsiVal > 70) {
       score -= 20;
       techText += `RSI is Overbought (${rsiVal.toFixed(
         1
-      )}), suggesting a pullback. `;
+      )}), potential pullback. `;
     } else {
-      techText += `RSI is Neutral (${rsiVal.toFixed(
-        1
-      )}), showing stable momentum. `;
+      techText += `RSI is Neutral (${rsiVal.toFixed(1)}). `;
     }
 
-    // EMA Logic
+    // EMA Text
     if (currentPrice > ema20) {
       score += 15;
-      techText += `Price is above the 20-day EMA (Rs. ${ema20.toFixed(
+      techText += `Price is above 20-EMA (Rs. ${ema20.toFixed(
         0
-      )}), confirming an uptrend. `;
+      )}), confirming uptrend. `;
     } else {
       score -= 15;
-      techText += `Price is below the 20-day EMA (Rs. ${ema20.toFixed(
+      techText += `Price is below 20-EMA (Rs. ${ema20.toFixed(
         0
-      )}), indicating trend weakness. `;
+      )}), indicating weakness. `;
     }
 
-    // MACD Logic (Using HISTOGRAM for Momentum - This is the -2.98 you saw)
+    // MACD Text (Using Histogram for Momentum)
     if (histogram > 0) {
       score += 10;
       techText += `MACD Histogram is positive (${histogram.toFixed(
         2
-      )}), showing bullish momentum. `;
+      )}), showing Bullish momentum. `;
     } else {
       score -= 10;
       techText += `MACD Histogram is negative (${histogram.toFixed(
         2
-      )}), indicating bearish pressure. `;
+      )}), showing Bearish momentum. `;
     }
 
-    // 5. Verdict
+    // 5. Verdict Logic
     let recommendation = "HOLD";
     let verdictText = "";
     let color = "#F59E0B";
@@ -228,25 +231,21 @@ exports.getAnalysis = async (req, res) => {
       recommendation = "STRONG BUY";
       color = "#10B981";
       verdictText =
-        "Strong Bullish Signals. Momentum (MACD), Trend (EMA), and Volume are aligning for an upward move.";
+        "Strong Bullish setup. Momentum and Trend are aligned upwards.";
     } else if (score >= 60) {
       recommendation = "BUY";
       color = "#34D399";
-      verdictText =
-        "Positive Outlook. The trend is healthy. Good time to accumulate on dips.";
+      verdictText = "Bullish outlook. Good opportunity to accumulate.";
     } else if (score <= 40) {
       recommendation = "SELL";
       color = "#EF4444";
-      verdictText =
-        "Bearish Warning. Momentum is fading and trend support is breaking. Consider exiting.";
+      verdictText = "Bearish outlook. Trend is broken, consider exiting.";
     } else if (score <= 25) {
       recommendation = "STRONG SELL";
       color = "#EF4444";
-      verdictText =
-        "Critical Sell Signal. Technicals indicate a strong downtrend. Protect your capital.";
+      verdictText = "Critical weakness. High risk of further downside.";
     } else {
-      verdictText =
-        "Mixed Signals. The market is indecisive. It's safer to wait for a clearer trend confirmation.";
+      verdictText = "Market is indecisive. Wait for clearer signals.";
     }
 
     const response = {
@@ -265,13 +264,23 @@ exports.getAnalysis = async (req, res) => {
     };
 
     if (isPro) {
-      // We show the Histogram value for "MACD" because that's the "Momentum"
-      // value traders usually look at for divergence (-2.98).
-      // Or you can show the MACD Line (27.98).
-      // Let's show Histogram as it indicates the immediate BUY/SELL signal.
+      // ✅ We now return the MACD Line (20.74) and Histogram (-7.37)
+      // Most dashboards show the Histogram for divergence, but you can choose.
+      // Let's send Histogram as the main "MACD" display value since it shows +/- momentum
       response.indicators.macd = histogram.toFixed(2);
+
+      // Or if you prefer the Line value like the user input:
+      // response.indicators.macd = macd.toFixed(2);
+
       response.indicators.ema = ema20.toFixed(2);
       response.indicators.volume = currentVolume.toLocaleString();
+
+      // Extra details for debugging if needed
+      response.details = {
+        macdLine: macd.toFixed(2),
+        signalLine: signal.toFixed(2),
+        histogram: histogram.toFixed(2),
+      };
     } else {
       response.indicators.macd = "LOCKED";
       response.indicators.ema = "LOCKED";
